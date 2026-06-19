@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+streamlit
+pandas
+prophet
+plaid-python
+python-quickbooks
+anthropic
+python-dotenv
+sqlalchemy
