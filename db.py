@@ -97,8 +97,6 @@ def get_all_transactions():
         return pd.DataFrame()
     finally:
         session.close()
-
-
 if __name__ == "__main__":
     init_db()
     save_transactions([
