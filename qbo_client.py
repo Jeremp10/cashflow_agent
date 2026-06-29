@@ -79,6 +79,27 @@ def _build_client(access_token: str, refresh_token: str, realm_id: str) -> Quick
     )
     return client
 
+def refresh_access_token(refresh_token: str) -> dict:
+    """
+    Use a refresh_token to get a new access_token without re-authorizing.
+    """
+    auth_client = AuthClient(
+        client_id=QBO_CLIENT_ID,
+        client_secret=QBO_CLIENT_SECRET,
+        environment=QBO_ENVIRONMENT,
+        redirect_uri=QBO_REDIRECT_URI,
+    )
+    try:
+        auth_client.refresh(refresh_token=refresh_token)
+        credentials = {
+            "access_token": auth_client.access_token,
+            "refresh_token": auth_client.refresh_token,
+            "expires_in": auth_client.expires_in,
+        }
+        return credentials
+    except Exception as e:
+        print(f"Error refreshing token: {e}")
+        return {}
 
 def get_invoices(access_token: str, refresh_token: str, realm_id: str) -> list:
     """
