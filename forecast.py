@@ -1,6 +1,7 @@
+import logging
 import pandas as pd
 from prophet import Prophet
-import logging
+
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
@@ -30,6 +31,7 @@ def prepare_data(transactions_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_forecast(cleaned_df: pd.DataFrame, days_ahead: int = 90, starting_balance: float = 0.0) -> pd.DataFrame:
+    """Fit Prophet on daily net flow, then convert to a projected running balance."""
     if cleaned_df.empty:
         return pd.DataFrame(columns=["ds", "yhat", "yhat_lower", "yhat_upper", "projected_balance"])
 
@@ -45,22 +47,28 @@ def run_forecast(cleaned_df: pd.DataFrame, days_ahead: int = 90, starting_balanc
 
 
 def flag_low_balance(forecast_df: pd.DataFrame, threshold: float) -> list:
+    """Return dates where the projected running balance drops below the threshold."""
     if forecast_df.empty:
         return []
     return forecast_df.loc[forecast_df["projected_balance"] < threshold, "ds"].tolist()
+
 
 if __name__ == "__main__":
     from db import get_all_transactions
 
     df = get_all_transactions()
-    cleaned = prepare_data(df)
-    print("Cleaned data:")
-    print(cleaned)
+    print(f"Loaded {len(df)} transactions from db")
 
-    forecast = run_forecast(cleaned, days_ahead=90, starting_balance=5000.0)
+    cleaned = prepare_data(df)
+    print("\nDaily net cash flow (last 10 days):")
+    print(cleaned.tail(10))
+
+    starting_balance = 5000.0  # placeholder, replace with real Plaid balance next
+    forecast = run_forecast(cleaned, days_ahead=90, starting_balance=starting_balance)
+
     print("\nForecast (last 10 rows):")
     print(forecast.tail(10))
 
     flagged = flag_low_balance(forecast, threshold=1000.0)
-    print(f"\n{len(flagged)} days flagged below threshold:")
-    print(flagged[:5])
+    print(f"\n{len(flagged)} days flagged below $1000 threshold")
+    print(flagged[:10])
