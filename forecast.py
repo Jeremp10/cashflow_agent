@@ -1,6 +1,8 @@
 import logging
 import pandas as pd
+from datetime import date
 from prophet import Prophet
+
 
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
@@ -42,19 +44,28 @@ def run_forecast(cleaned_df: pd.DataFrame, days_ahead: int = 90, starting_balanc
     forecast = model.predict(future)
 
     result = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+
+    today = pd.Timestamp(date.today())
+    result = result[result["ds"] >= today].copy()
+    result = result.reset_index(drop=True)
+
     result["projected_balance"] = starting_balance + result["yhat"].cumsum()
+
     return result
 
-
 def flag_low_balance(forecast_df: pd.DataFrame, threshold: float) -> list:
-    """Return dates where the projected running balance drops below the threshold."""
+    """Return dates where projected running balance drops below threshold."""
     if forecast_df.empty:
         return []
-    return forecast_df.loc[forecast_df["projected_balance"] < threshold, "ds"].tolist()
+    flagged = forecast_df.loc[forecast_df["projected_balance"] < threshold, "ds"].tolist()
+    return flagged
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.append(".")
     from db import get_all_transactions
+    from sync import get_starting_balance
 
     df = get_all_transactions()
     print(f"Loaded {len(df)} transactions from db")
@@ -63,12 +74,15 @@ if __name__ == "__main__":
     print("\nDaily net cash flow (last 10 days):")
     print(cleaned.tail(10))
 
-    starting_balance = 5000.0  # placeholder, replace with real Plaid balance next
-    forecast = run_forecast(cleaned, days_ahead=90, starting_balance=starting_balance)
+    starting_balance = get_starting_balance()
 
-    print("\nForecast (last 10 rows):")
+    forecast = run_forecast(cleaned, days_ahead=30, starting_balance=starting_balance)
+
+    print("\nForecast (next 30 days, last 10 rows):")
     print(forecast.tail(10))
 
     flagged = flag_low_balance(forecast, threshold=1000.0)
-    print(f"\n{len(flagged)} days flagged below $1000 threshold")
-    print(flagged[:10])
+    if flagged:
+        print(f"\n  Balance projected to drop below $1,000 starting: {flagged[0].date()}")
+    else:
+        print("\n Balance stays above $1,000 for the next 30 days")

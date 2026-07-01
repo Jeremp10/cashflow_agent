@@ -73,6 +73,28 @@ def sync_qbo_bills(access_token: str, refresh_token: str, realm_id: str):
     save_transactions(converted)
     print(f"Synced {len(converted)} QBO bills")
 
+def get_starting_balance() -> float:
+    """
+    Pull real checking + savings balances from Plaid sandbox.
+    Only includes liquid accounts (not credit cards, loans, investments).
+    """
+    from plaid_client import create_sandbox_public_token, exchange_public_token, get_balances
+    import time
+
+    public_token = create_sandbox_public_token()
+    access_token = exchange_public_token(public_token)
+    time.sleep(3)
+
+    accounts = get_balances(access_token)
+
+    liquid_types = {"checking", "savings"}
+    total = sum(
+        acc["balance"] for acc in accounts
+        if str(acc["subtype"]).lower() in liquid_types and acc["balance"] is not None
+    )
+    print(f"Starting balance (liquid accounts): ${total:,.2f}")
+    return total
+
 
 if __name__ == "__main__":
     init_db()
