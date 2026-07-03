@@ -5,12 +5,10 @@ from quickbooks import QuickBooks
 from quickbooks.objects.invoice import Invoice
 from quickbooks.objects.bill import Bill
 
-load_dotenv()
-QBO_CLIENT_ID = os.getenv("QBO_CLIENT_ID")
-QBO_CLIENT_SECRET = os.getenv("QBO_CLIENT_SECRET")
-QBO_REDIRECT_URI = os.getenv("QBO_REDIRECT_URI")
-QBO_ENVIRONMENT = os.getenv("QBO_ENVIRONMENT", "sandbox")
-QBO_SCOPES = ["com.intuit.quickbooks.accounting"]
+from config.settings import (
+    QBO_CLIENT_ID, QBO_CLIENT_SECRET,
+    QBO_REDIRECT_URI, QBO_ENVIRONMENT
+)
 
 
 def get_auth_url(state: str = "state123") -> str:

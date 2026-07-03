@@ -4,6 +4,7 @@ from datetime import date
 from prophet import Prophet
 
 
+
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
@@ -64,8 +65,9 @@ def flag_low_balance(forecast_df: pd.DataFrame, threshold: float) -> list:
 if __name__ == "__main__":
     import sys
     sys.path.append(".")
-    from db import get_all_transactions
-    from sync import get_starting_balance
+    from database.repository import get_all_transactions
+    from integrations.sync import get_starting_balance
+    from config.settings import FORECAST_HORIZON_DAYS, LOW_BALANCE_THRESHOLD
 
     df = get_all_transactions()
     print(f"Loaded {len(df)} transactions from db")

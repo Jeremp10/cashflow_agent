@@ -1,12 +1,12 @@
 from datetime import date, datetime
-from plaid_client import create_sandbox_public_token, exchange_public_token, get_transactions
-from qbo_client import get_invoices, get_bills, refresh_access_token,_save_qbo_tokens
-from db import init_db, save_transactions
 import time
 import os
-from dotenv import load_dotenv
+from integrations.plaid_client import create_sandbox_public_token, exchange_public_token, get_transactions, get_balances
+from integrations.qbo_client import get_invoices, get_bills, refresh_access_token, _save_qbo_tokens
+from database.repository import init_db, save_transactions
+from config.settings import QBO_ACCESS_TOKEN, QBO_REFRESH_TOKEN, QBO_REALM_ID
 
-load_dotenv()
+
 
 
 def sync_plaid_transactions(access_token: str, start_date, end_date):
@@ -78,7 +78,7 @@ def get_starting_balance() -> float:
     Pull real checking + savings balances from Plaid sandbox.
     Only includes liquid accounts (not credit cards, loans, investments).
     """
-    from plaid_client import create_sandbox_public_token, exchange_public_token, get_balances
+    from integrations.plaid_client import create_sandbox_public_token, exchange_public_token, get_balances
     import time
 
     public_token = create_sandbox_public_token()

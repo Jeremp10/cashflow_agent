@@ -8,16 +8,10 @@ from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCr
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
 import time
-from dotenv import load_dotenv
 import os
 from datetime import datetime, date
 
-# Load environment variables
-load_dotenv()
-
-PLAID_CLIENT_ID = os.getenv("PLAID_CLIENT_ID")
-PLAID_SECRET = os.getenv("PLAID_SECRET")
-PLAID_ENV = os.getenv("PLAID_ENV", "sandbox")  # sandbox or production
+from config.settings import PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV
 
 # Configure Plaid client
 configuration = plaid.Configuration(
