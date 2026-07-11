@@ -56,6 +56,7 @@ async def startup():
 
 class AskRequest(BaseModel):
     question: str
+    current_balance: float = 320.0
 
 
 class AskResponse(BaseModel):

@@ -104,6 +104,8 @@ if "balance" not in st.session_state:
 
 if "last_synced" not in st.session_state:
     st.session_state.last_synced = None
+if "page" not in st.session_state:
+    st.session_state.page = "Dashboard"
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -150,8 +152,11 @@ with st.sidebar:
     page = st.radio(
         "Go to",
         ["Dashboard", "Ask Your CFO"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        index=["Dashboard", " Ask Your CFO"].index(st.session_state.page),
+    key="nav_radio"
     )
+    st.session_state.page = page
 
     st.markdown("---")
     st.caption("Powered by Plaid · QuickBooks · Claude AI")
@@ -272,7 +277,10 @@ if page == "Dashboard":
         with q_col1:
             if st.button("Will I make payroll?"):
                 st.session_state.chat_history = []
-                answer = api_post("/ask", {"question": "Will I make payroll this month?"})
+                answer = api_post("/ask", {
+                    "question": "Will I make payroll this month?",
+                    "current_balance": st.session_state.balance or 320.0
+                        })
                 if answer:
                     st.session_state.chat_history.append({
                         "role": "user",
@@ -282,13 +290,16 @@ if page == "Dashboard":
                         "role": "assistant",
                         "content": answer["answer"]
                     })
-                    page = " Ask Your CFO"
+                    st.session_state.page = " Ask Your CFO"
                     st.rerun()
 
         with q_col2:
             if st.button("What are my biggest expenses?"):
                 st.session_state.chat_history = []
-                answer = api_post("/ask", {"question": "What are my biggest expenses?"})
+                answer = api_post("/ask", {
+                    "question": "What are my biggest expenses?",
+                    "current_balance": st.session_state.balance or 320.0
+                })
                 if answer:
                     st.session_state.chat_history.append({
                         "role": "user",
@@ -298,12 +309,17 @@ if page == "Dashboard":
                         "role": "assistant",
                         "content": answer["answer"]
                     })
+                    st.session_state.page = " Ask Your CFO"
                     st.rerun()
 
         with q_col3:
             if st.button("Should I be worried?"):
                 st.session_state.chat_history = []
-                answer = api_post("/ask", {"question": "Should I be worried about my cash flow?"})
+                answer = api_post("/ask", {
+                    "question": "Should I be worried about my cash flow?",
+                    "current_balance": st.session_state.balance or 320.0
+                })
+
                 if answer:
                     st.session_state.chat_history.append({
                         "role": "user",
@@ -313,6 +329,7 @@ if page == "Dashboard":
                         "role": "assistant",
                         "content": answer["answer"]
                     })
+                    st.session_state.page = " Ask Your CFO"
                     st.rerun()
 
     else:
@@ -373,7 +390,10 @@ elif page == " Ask Your CFO":
         with col:
             if st.button(suggestion, key=f"sug_{i}"):
                 with st.spinner("Thinking..."):
-                    answer = api_post("/ask", {"question": suggestion})
+                    answer = api_post("/ask", {
+                    "question": "Will I make payroll this month?",
+                    "current_balance": st.session_state.balance or 320.0
+                        })
                     if answer:
                         st.session_state.chat_history.append({
                             "role": "user", "content": suggestion
@@ -386,7 +406,10 @@ elif page == " Ask Your CFO":
     # Handle send
     if send and user_input.strip():
         with st.spinner("Your CFO is thinking..."):
-            answer = api_post("/ask", {"question": user_input.strip()})
+            answer = api_post("/ask", {
+                    "question": "Will I make payroll this month?",
+                    "current_balance": st.session_state.balance or 320.0
+                        })
             if answer:
                 st.session_state.chat_history.append({
                     "role": "user", "content": user_input.strip()
