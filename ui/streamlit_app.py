@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -37,20 +36,6 @@ st.markdown("""
     .positive { color: #00c48c; }
     .negative { color: #ff6b6b; }
     .warning  { color: #ffd166; }
-    .chat-message-user {
-        background: #1e2130;
-        border-radius: 12px;
-        padding: 12px 16px;
-        margin: 8px 0;
-        border-left: 3px solid #4a6fa5;
-    }
-    .chat-message-assistant {
-        background: #161b2e;
-        border-radius: 12px;
-        padding: 12px 16px;
-        margin: 8px 0;
-        border-left: 3px solid #00c48c;
-    }
     .stButton > button {
         width: 100%;
         border-radius: 8px;
@@ -71,7 +56,7 @@ def api_get(endpoint: str):
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to API. Make sure `uvicorn api.main:app --reload --port 8000` is running.")
+        st.error("Cannot connect to API. Make sure uvicorn is running on port 8000.")
         return None
     except Exception as e:
         st.error(f"API error: {e}")
@@ -91,6 +76,13 @@ def api_post(endpoint: str, payload: dict):
         return None
 
 
+# ── Cache helpers (must be at module level, not inside with blocks) ───────────
+
+@st.cache_data(ttl=30)
+def check_health():
+    return api_get("/health")
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 
 if "chat_history" not in st.session_state:
@@ -104,6 +96,7 @@ if "balance" not in st.session_state:
 
 if "last_synced" not in st.session_state:
     st.session_state.last_synced = None
+
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
 
@@ -114,8 +107,8 @@ with st.sidebar:
     st.markdown("## Cashflow Agent")
     st.markdown("---")
 
-    # Connection status
-    health = api_get("/health")
+    # Connection status — cached, only re-checks every 30 seconds
+    health = check_health()
     if health:
         st.success("API Connected")
     else:
@@ -138,7 +131,6 @@ with st.sidebar:
                 else:
                     st.warning("QuickBooks sync failed")
                 st.session_state.last_synced = datetime.now().strftime("%H:%M:%S")
-                # Refresh forecast after sync
                 st.session_state.forecast_data = None
                 st.session_state.balance = None
 
@@ -147,14 +139,16 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Navigation
+    # Navigation — key changes when page changes, forces radio to re-render
     st.markdown("### Navigation")
+    PAGE_OPTIONS = ["Dashboard", "Ask Your CFO"]
+
     page = st.radio(
         "Go to",
-        ["Dashboard", "Ask Your CFO"],
+        PAGE_OPTIONS,
         label_visibility="collapsed",
-        index=["Dashboard", " Ask Your CFO"].index(st.session_state.page),
-    key="nav_radio"
+        index=PAGE_OPTIONS.index(st.session_state.page) if st.session_state.page in PAGE_OPTIONS else 0,
+        key=f"nav_radio_{st.session_state.page}"
     )
     st.session_state.page = page
 
@@ -162,9 +156,8 @@ with st.sidebar:
     st.caption("Powered by Plaid · QuickBooks · Claude AI")
 
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# ── Load data (cached in session state) ──────────────────────────────────────
 
-# Cache balance + forecast in session state to avoid re-fetching on every rerender
 if st.session_state.balance is None:
     with st.spinner("Fetching balance..."):
         balance_data = api_get("/balance")
@@ -178,9 +171,34 @@ if st.session_state.forecast_data is None:
             st.session_state.forecast_data = forecast_data
 
 
+# ── Helper: quick insight questions ──────────────────────────────────────────
+
+def send_quick_question(question: str):
+    """
+    Calls /ask, stores result in chat history, switches to chat page.
+    """
+    with st.spinner("Thinking..."):
+        answer = api_post("/ask", {
+            "question": question,
+            "current_balance": st.session_state.balance or 0.0
+        })
+        if answer:
+            st.session_state.chat_history = []
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": question
+            })
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": answer["answer"]
+            })
+            st.session_state.page = "Ask Your CFO"
+            st.rerun()
+
+
 # ── Dashboard page ────────────────────────────────────────────────────────────
 
-if page == "Dashboard":
+if st.session_state.page == "Dashboard":
     st.markdown("# Financial Dashboard")
     st.markdown(f"*As of {datetime.now().strftime('%B %d, %Y')}*")
     st.markdown("---")
@@ -192,7 +210,7 @@ if page == "Dashboard":
         trend = forecast["trend"]
         alert = forecast["low_balance_alert"]
 
-        # ── Key metrics row ──
+        # Key metrics
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
@@ -211,11 +229,8 @@ if page == "Dashboard":
             )
 
         with col3:
-            trend_icon = "📈" if trend == "positive" else "📉"
-            st.metric(
-                label="Trend",
-                value=f"{trend_icon} {trend.capitalize()}",
-            )
+            trend_label = "Positive" if trend == "positive" else "Negative"
+            st.metric(label="Trend", value=trend_label)
 
         with col4:
             st.metric(
@@ -225,29 +240,27 @@ if page == "Dashboard":
 
         st.markdown("---")
 
-        # ── Alert banner ──
+        # Alert banner
         if "drop below" in alert:
-            st.warning(f" {alert}")
+            st.warning(alert)
         else:
-            st.success(f" {alert}")
+            st.success(alert)
 
         st.markdown("---")
 
-        # ── Balance gauge ──
+        # Chart + summary
         col_left, col_right = st.columns(2)
 
         with col_left:
             st.markdown("#### Current vs Projected Balance")
             fig = go.Figure()
-
             fig.add_trace(go.Bar(
                 x=["Current Balance", "Projected Balance (30d)"],
-                y=[balance, max(projected, 0)],
+                y=[balance, projected],
                 marker_color=["#4a6fa5", "#00c48c" if projected > 0 else "#ff6b6b"],
                 text=[f"${balance:,.2f}", f"${projected:,.2f}"],
                 textposition="auto",
             ))
-
             fig.update_layout(
                 plot_bgcolor="#1e2130",
                 paper_bgcolor="#1e2130",
@@ -263,115 +276,48 @@ if page == "Dashboard":
             st.markdown(f"""
 | | Amount |
 |---|---|
-|  Current liquid balance | **${balance:,.2f}** |
-|  30-day projected balance | **${projected:,.2f}** |
-|  Outstanding invoices (QBO) | **to be collected** |
-|  Unpaid bills (QBO) | **due out** |
-|  Forecast trend | **{trend.capitalize()}** |
+| Current liquid balance | **${balance:,.2f}** |
+| 30-day projected balance | **${projected:,.2f}** |
+| Forecast trend | **{trend.capitalize()}** |
 """)
 
         st.markdown("---")
-        st.markdown("####  Quick Insights")
+        st.markdown("#### Quick Insights")
+        st.markdown("Click a question to get an instant answer from your CFO agent.")
 
         q_col1, q_col2, q_col3 = st.columns(3)
+
         with q_col1:
             if st.button("Will I make payroll?"):
-                st.session_state.chat_history = []
-                answer = api_post("/ask", {
-                    "question": "Will I make payroll this month?",
-                    "current_balance": st.session_state.balance or 320.0
-                        })
-                if answer:
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": "Will I make payroll this month?"
-                    })
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": answer["answer"]
-                    })
-                    st.session_state.page = " Ask Your CFO"
-                    st.rerun()
+                send_quick_question("Will I make payroll this month?")
 
         with q_col2:
             if st.button("What are my biggest expenses?"):
-                st.session_state.chat_history = []
-                answer = api_post("/ask", {
-                    "question": "What are my biggest expenses?",
-                    "current_balance": st.session_state.balance or 320.0
-                })
-                if answer:
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": "What are my biggest expenses?"
-                    })
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": answer["answer"]
-                    })
-                    st.session_state.page = " Ask Your CFO"
-                    st.rerun()
+                send_quick_question("What are my biggest expenses?")
 
         with q_col3:
             if st.button("Should I be worried?"):
-                st.session_state.chat_history = []
-                answer = api_post("/ask", {
-                    "question": "Should I be worried about my cash flow?",
-                    "current_balance": st.session_state.balance or 320.0
-                })
-
-                if answer:
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": "Should I be worried about my cash flow?"
-                    })
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": answer["answer"]
-                    })
-                    st.session_state.page = " Ask Your CFO"
-                    st.rerun()
+                send_quick_question("Should I be worried about my cash flow?")
 
     else:
-        st.info("No data loaded yet. Click **Sync Plaid + QuickBooks** in the sidebar to get started.")
+        st.info("No data loaded yet. Click Sync Plaid + QuickBooks in the sidebar to get started.")
 
 
 # ── Chat page ─────────────────────────────────────────────────────────────────
 
-elif page == " Ask Your CFO":
-    st.markdown("#  Ask Your CFO")
+elif st.session_state.page == "Ask Your CFO":
+    st.markdown("# Ask Your CFO")
     st.markdown("*Ask anything about your cash flow, expenses, invoices, or financial health.*")
     st.markdown("---")
 
-    # Display chat history
+    # Chat history — st.chat_message handles markdown correctly
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
-            st.markdown(f"""
-<div class="chat-message-user">
-<strong>You:</strong><br>{msg['content']}
-</div>
-""", unsafe_allow_html=True)
+            with st.chat_message("user"):
+                st.markdown(msg["content"])
         else:
-            st.markdown(f"""
-<div class="chat-message-assistant">
-<strong>CFO Agent:</strong><br>{msg['content']}
-</div>
-""", unsafe_allow_html=True)
-
-    # Input
-    st.markdown("---")
-    col_input, col_send = st.columns([5, 1])
-
-    with col_input:
-        user_input = st.text_input(
-            "Ask a question",
-            placeholder="e.g. Will I have enough cash to hire someone next month?",
-            label_visibility="collapsed",
-            key="chat_input"
-        )
-
-    with col_send:
-        send = st.button("Send →", type="primary")
+            with st.chat_message("assistant"):
+                st.markdown(msg["content"])
 
     # Suggested questions
     st.markdown("**Suggested questions:**")
@@ -391,9 +337,9 @@ elif page == " Ask Your CFO":
             if st.button(suggestion, key=f"sug_{i}"):
                 with st.spinner("Thinking..."):
                     answer = api_post("/ask", {
-                    "question": "Will I make payroll this month?",
-                    "current_balance": st.session_state.balance or 320.0
-                        })
+                        "question": suggestion,
+                        "current_balance": st.session_state.balance or 0.0
+                    })
                     if answer:
                         st.session_state.chat_history.append({
                             "role": "user", "content": suggestion
@@ -403,13 +349,17 @@ elif page == " Ask Your CFO":
                         })
                         st.rerun()
 
-    # Handle send
-    if send and user_input.strip():
+    st.markdown("---")
+
+    # Native chat input — Enter key sends, no button needed
+    user_input = st.chat_input("Ask your CFO anything...")
+
+    if user_input:
         with st.spinner("Your CFO is thinking..."):
             answer = api_post("/ask", {
-                    "question": "Will I make payroll this month?",
-                    "current_balance": st.session_state.balance or 320.0
-                        })
+                "question": user_input.strip(),
+                "current_balance": st.session_state.balance or 0.0
+            })
             if answer:
                 st.session_state.chat_history.append({
                     "role": "user", "content": user_input.strip()
@@ -419,9 +369,9 @@ elif page == " Ask Your CFO":
                 })
                 st.rerun()
 
-    # Clear conversation
+    # Clear conversation — inside chat page only, not on dashboard
+    st.markdown("---")
     if st.session_state.chat_history:
-        st.markdown("---")
         if st.button("Clear conversation"):
             api_post("/reset", {})
             st.session_state.chat_history = []
