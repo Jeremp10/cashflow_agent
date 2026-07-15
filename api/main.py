@@ -223,14 +223,9 @@ async def ask_question(request: AskRequest):
     """
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-
     try:
-        balance, _ = _get_plaid_balance()
-        answer = ask(request.question, balance)
-        return AskResponse(
-            answer=answer,
-            question=request.question,
-        )
+        answer = ask(request.question, request.current_balance)
+        return AskResponse(answer=answer, question=request.question)
     except Exception as e:
         logger.error(f"Agent error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -241,3 +236,19 @@ async def reset():
     """Clear conversation history between sessions."""
     reset_conversation()
     return {"status": "conversation reset"}
+
+@app.get("/forecast/validation")
+async def get_validation():
+    """Run cross validation and return accuracy metrics."""
+    try:
+        from forecast.validation import summarize_validation
+        df = get_all_transactions()
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No transactions found.")
+        cleaned = prepare_data(df)
+        return summarize_validation(cleaned)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

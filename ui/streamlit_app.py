@@ -16,26 +16,6 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main { background-color: #0f1117; }
-    .metric-card {
-        background: #1e2130;
-        border-radius: 12px;
-        padding: 20px;
-        border: 1px solid #2d3250;
-    }
-    .metric-value {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #ffffff;
-    }
-    .metric-label {
-        font-size: 0.85rem;
-        color: #8b92a5;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    .positive { color: #00c48c; }
-    .negative { color: #ff6b6b; }
-    .warning  { color: #ffd166; }
     .stButton > button {
         width: 100%;
         border-radius: 8px;
@@ -76,11 +56,16 @@ def api_post(endpoint: str, payload: dict):
         return None
 
 
-# ── Cache helpers (must be at module level, not inside with blocks) ───────────
+# ── Cache helpers ─────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=30)
 def check_health():
     return api_get("/health")
+
+
+@st.cache_data(ttl=300)
+def fetch_validation():
+    return api_get("/forecast/validation")
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -107,7 +92,6 @@ with st.sidebar:
     st.markdown("## Cashflow Agent")
     st.markdown("---")
 
-    # Connection status — cached, only re-checks every 30 seconds
     health = check_health()
     if health:
         st.success("API Connected")
@@ -116,7 +100,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Sync button
     st.markdown("### Data Sync")
     if st.button("Sync Plaid + QuickBooks", type="primary"):
         with st.spinner("Syncing data from Plaid and QuickBooks..."):
@@ -139,7 +122,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Navigation — key changes when page changes, forces radio to re-render
     st.markdown("### Navigation")
     PAGE_OPTIONS = ["Dashboard", "Ask Your CFO"]
 
@@ -156,7 +138,7 @@ with st.sidebar:
     st.caption("Powered by Plaid · QuickBooks · Claude AI")
 
 
-# ── Load data (cached in session state) ──────────────────────────────────────
+# ── Load data ─────────────────────────────────────────────────────────────────
 
 if st.session_state.balance is None:
     with st.spinner("Fetching balance..."):
@@ -171,12 +153,9 @@ if st.session_state.forecast_data is None:
             st.session_state.forecast_data = forecast_data
 
 
-# ── Helper: quick insight questions ──────────────────────────────────────────
+# ── Helper ────────────────────────────────────────────────────────────────────
 
 def send_quick_question(question: str):
-    """
-    Calls /ask, stores result in chat history, switches to chat page.
-    """
     with st.spinner("Thinking..."):
         answer = api_post("/ask", {
             "question": question,
@@ -184,19 +163,13 @@ def send_quick_question(question: str):
         })
         if answer:
             st.session_state.chat_history = []
-            st.session_state.chat_history.append({
-                "role": "user",
-                "content": question
-            })
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": answer["answer"]
-            })
+            st.session_state.chat_history.append({"role": "user", "content": question})
+            st.session_state.chat_history.append({"role": "assistant", "content": answer["answer"]})
             st.session_state.page = "Ask Your CFO"
             st.rerun()
 
 
-# ── Dashboard page ────────────────────────────────────────────────────────────
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 if st.session_state.page == "Dashboard":
     st.markdown("# Financial Dashboard")
@@ -210,37 +183,19 @@ if st.session_state.page == "Dashboard":
         trend = forecast["trend"]
         alert = forecast["low_balance_alert"]
 
-        # Key metrics
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
-            st.metric(
-                label="Current Balance",
-                value=f"${balance:,.2f}",
-            )
-
+            st.metric(label="Current Balance", value=f"${balance:,.2f}")
         with col2:
             delta = projected - balance
-            st.metric(
-                label="Projected Balance (30d)",
-                value=f"${projected:,.2f}",
-                delta=f"${delta:,.2f}",
-                delta_color="normal",
-            )
-
+            st.metric(label="Projected Balance (30d)", value=f"${projected:,.2f}", delta=f"${delta:,.2f}", delta_color="normal")
         with col3:
-            trend_label = "Positive" if trend == "positive" else "Negative"
-            st.metric(label="Trend", value=trend_label)
-
+            st.metric(label="Trend", value="Positive" if trend == "positive" else "Negative")
         with col4:
-            st.metric(
-                label="Forecast Period",
-                value=f"{forecast['forecast_days']} days",
-            )
+            st.metric(label="Forecast Period", value=f"{forecast['forecast_days']} days")
 
         st.markdown("---")
 
-        # Alert banner
         if "drop below" in alert:
             st.warning(alert)
         else:
@@ -248,7 +203,6 @@ if st.session_state.page == "Dashboard":
 
         st.markdown("---")
 
-        # Chart + summary
         col_left, col_right = st.columns(2)
 
         with col_left:
@@ -282,19 +236,58 @@ if st.session_state.page == "Dashboard":
 """)
 
         st.markdown("---")
+
+        # ── Model Health ──────────────────────────────────────────────────────
+        with st.expander("Model Health"):
+            validation = fetch_validation()
+
+            if validation and "error" not in validation:
+                v_col1, v_col2, v_col3 = st.columns(3)
+
+                with v_col1:
+                    st.metric(
+                        label="Avg Daily Error (MAE)",
+                        value=f"${validation['mae']:,.0f}",
+                        help="Average dollar difference between forecast and actual per day"
+                    )
+                with v_col2:
+                    mape_value = validation["mape"]
+                    mape_unreliable = validation.get("mape_unreliable", False)
+                    st.metric(
+                        label="Error Rate (MAPE)",
+                        value="N/A" if mape_unreliable else f"{mape_value:.1f}%",
+                        help="Unreliable when daily cash flows are near zero — use MAE instead" if mape_unreliable else "Average percentage error — lower is better"
+                    )
+                with v_col3:
+                    st.metric(
+                        label="Data Points",
+                        value=validation["data_points"],
+                        help="Number of days used to train the model"
+                    )
+
+                st.caption(validation["interpretation"])
+                st.info(
+                    "Forecast accuracy improves naturally as more transaction history "
+                    "accumulates. With 3-6 months of data, error rates typically drop "
+                    "significantly. Current metrics reflect your available history."
+                )
+
+            elif validation and "error" in validation:
+                st.warning(validation["error"])
+            else:
+                st.caption("Model health data unavailable. Make sure the API is running.")
+
+        st.markdown("---")
         st.markdown("#### Quick Insights")
         st.markdown("Click a question to get an instant answer from your CFO agent.")
 
         q_col1, q_col2, q_col3 = st.columns(3)
-
         with q_col1:
             if st.button("Will I make payroll?"):
                 send_quick_question("Will I make payroll this month?")
-
         with q_col2:
             if st.button("What are my biggest expenses?"):
                 send_quick_question("What are my biggest expenses?")
-
         with q_col3:
             if st.button("Should I be worried?"):
                 send_quick_question("Should I be worried about my cash flow?")
@@ -310,7 +303,6 @@ elif st.session_state.page == "Ask Your CFO":
     st.markdown("*Ask anything about your cash flow, expenses, invoices, or financial health.*")
     st.markdown("---")
 
-    # Chat history — st.chat_message handles markdown correctly
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             with st.chat_message("user"):
@@ -319,7 +311,6 @@ elif st.session_state.page == "Ask Your CFO":
             with st.chat_message("assistant"):
                 st.markdown(msg["content"])
 
-    # Suggested questions
     st.markdown("**Suggested questions:**")
     sug_col1, sug_col2, sug_col3, sug_col4 = st.columns(4)
 
@@ -341,17 +332,12 @@ elif st.session_state.page == "Ask Your CFO":
                         "current_balance": st.session_state.balance or 0.0
                     })
                     if answer:
-                        st.session_state.chat_history.append({
-                            "role": "user", "content": suggestion
-                        })
-                        st.session_state.chat_history.append({
-                            "role": "assistant", "content": answer["answer"]
-                        })
+                        st.session_state.chat_history.append({"role": "user", "content": suggestion})
+                        st.session_state.chat_history.append({"role": "assistant", "content": answer["answer"]})
                         st.rerun()
 
     st.markdown("---")
 
-    # Native chat input — Enter key sends, no button needed
     user_input = st.chat_input("Ask your CFO anything...")
 
     if user_input:
@@ -361,15 +347,10 @@ elif st.session_state.page == "Ask Your CFO":
                 "current_balance": st.session_state.balance or 0.0
             })
             if answer:
-                st.session_state.chat_history.append({
-                    "role": "user", "content": user_input.strip()
-                })
-                st.session_state.chat_history.append({
-                    "role": "assistant", "content": answer["answer"]
-                })
+                st.session_state.chat_history.append({"role": "user", "content": user_input.strip()})
+                st.session_state.chat_history.append({"role": "assistant", "content": answer["answer"]})
                 st.rerun()
 
-    # Clear conversation — inside chat page only, not on dashboard
     st.markdown("---")
     if st.session_state.chat_history:
         if st.button("Clear conversation"):
