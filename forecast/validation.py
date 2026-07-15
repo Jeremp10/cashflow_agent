@@ -61,30 +61,39 @@ def summarize_validation(cleaned_df: pd.DataFrame) -> dict:
     # Key metrics to report
     mae = metrics["mae"].mean()
     rmse = metrics["rmse"].mean()
-    mape = metrics["mape"].mean() * 100  # as percentage
+    mape = metrics["mape"].mean() * 100
+
+    mape_display = min(mape, 999.0)
+    mape_unreliable = mape > 200
 
     return {
         "mae": round(mae, 2),
         "rmse": round(rmse, 2),
-        "mape": round(mape, 2),
-        "interpretation": _interpret_metrics(mae, mape),
+        "mape": round(mape_display, 1),
+        "mape_unreliable": mape_unreliable,
+        "interpretation": _interpret_metrics(mae, mape_display, mape_unreliable),
         "data_points": len(cleaned_df),
         "cv_windows": len(df_cv),
     }
 
 
-def _interpret_metrics(mae: float, mape: float) -> str:
+def _interpret_metrics(mae: float, mape: float, mape_unreliable: bool = False) -> str:
     """
     Plain English interpretation of model accuracy.
     This is what you'd actually say in a demo or to a client.
     """
-    if mape < 10:
+    if mape_unreliable:
+        return (
+            f"Error rate unreliable with current data — daily net flows are too "
+            f"variable for percentage-based metrics to be meaningful. "
+            f"Dollar error (MAE) of ${mae:,.0f}/day is the more useful signal here."
+        )
+    elif mape < 10:
         return f"Strong accuracy — forecast is off by {mape:.1f}% on average"
     elif mape < 25:
         return f"Moderate accuracy — forecast is off by {mape:.1f}% on average. Improves with more history."
     else:
-        return f"Limited accuracy ({mape:.1f}% average error) — model needs more historical data to be reliable. Current dataset is too short for high-confidence forecasting."
-
+        return f"Limited accuracy ({mape:.1f}% average error) — model needs more historical data."
 
 if __name__ == "__main__":
     from database.repository import get_all_transactions
