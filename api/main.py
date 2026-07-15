@@ -244,11 +244,9 @@ async def get_validation():
         from forecast.validation import summarize_validation
         df = get_all_transactions()
         if df.empty:
-            raise HTTPException(status_code=404, detail="No transactions found.")
+            return {"error": "No transactions found."}
         cleaned = prepare_data(df)
         return summarize_validation(cleaned)
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Validation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"error": "Validation unavailable at the moment."}

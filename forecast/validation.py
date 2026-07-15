@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 from prophet import Prophet
@@ -19,21 +18,40 @@ def run_cross_validation(cleaned_df: pd.DataFrame) -> pd.DataFrame:
 
     With ~90 days of data, these settings are conservative but honest.
     """
+    if cleaned_df.empty:
+        print("No data available for cross validation")
+        return pd.DataFrame()
+
     if len(cleaned_df) < 30:
         print("Not enough data for meaningful cross validation (need 30+ days)")
         return pd.DataFrame()
 
-    model = Prophet()
-    model.fit(cleaned_df)
+    # Prophet requires enough history for the initial window plus horizon.
+    min_required_days = 45 + 14
+    if len(cleaned_df) < min_required_days:
+        print(
+            f"Not enough data for cross validation (need at least {min_required_days} days, got {len(cleaned_df)})"
+        )
+        return pd.DataFrame()
 
-    df_cv = cross_validation(
-        model,
-        initial="45 days",
-        period="7 days",
-        horizon="14 days",
-        parallel=None
-    )
-    return df_cv
+    try:
+        model = Prophet()
+        model.fit(cleaned_df)
+
+        df_cv = cross_validation(
+            model,
+            initial="45 days",
+            period="7 days",
+            horizon="14 days",
+            parallel=None,
+        )
+        return df_cv
+    except ValueError as exc:
+        logging.getLogger(__name__).warning("Cross validation skipped due to insufficient history: %s", exc)
+        return pd.DataFrame()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Cross validation failed: %s", exc)
+        return pd.DataFrame()
 
 
 def get_performance_metrics(df_cv: pd.DataFrame) -> pd.DataFrame:
@@ -57,43 +75,36 @@ def summarize_validation(cleaned_df: pd.DataFrame) -> dict:
         return {"error": "Insufficient data for validation"}
 
     metrics = get_performance_metrics(df_cv)
+    if metrics.empty:
+        return {"error": "Insufficient data for validation"}
 
     # Key metrics to report
     mae = metrics["mae"].mean()
     rmse = metrics["rmse"].mean()
-    mape = metrics["mape"].mean() * 100
-
-    mape_display = min(mape, 999.0)
-    mape_unreliable = mape > 200
+    mape = metrics["mape"].mean() * 100  # as percentage
 
     return {
         "mae": round(mae, 2),
         "rmse": round(rmse, 2),
-        "mape": round(mape_display, 1),
-        "mape_unreliable": mape_unreliable,
-        "interpretation": _interpret_metrics(mae, mape_display, mape_unreliable),
+        "mape": round(mape, 2),
+        "interpretation": _interpret_metrics(mae, mape),
         "data_points": len(cleaned_df),
         "cv_windows": len(df_cv),
     }
 
 
-def _interpret_metrics(mae: float, mape: float, mape_unreliable: bool = False) -> str:
+def _interpret_metrics(mae: float, mape: float) -> str:
     """
     Plain English interpretation of model accuracy.
     This is what you'd actually say in a demo or to a client.
     """
-    if mape_unreliable:
-        return (
-            f"Error rate unreliable with current data — daily net flows are too "
-            f"variable for percentage-based metrics to be meaningful. "
-            f"Dollar error (MAE) of ${mae:,.0f}/day is the more useful signal here."
-        )
-    elif mape < 10:
+    if mape < 10:
         return f"Strong accuracy — forecast is off by {mape:.1f}% on average"
     elif mape < 25:
         return f"Moderate accuracy — forecast is off by {mape:.1f}% on average. Improves with more history."
     else:
-        return f"Limited accuracy ({mape:.1f}% average error) — model needs more historical data."
+        return f"Limited accuracy ({mape:.1f}% average error) — model needs more historical data to be reliable. Current dataset is too short for high-confidence forecasting."
+
 
 if __name__ == "__main__":
     from database.repository import get_all_transactions

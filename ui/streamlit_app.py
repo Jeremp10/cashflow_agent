@@ -251,12 +251,10 @@ if st.session_state.page == "Dashboard":
                         help="Average dollar difference between forecast and actual per day"
                     )
                 with v_col2:
-                    mape_value = validation["mape"]
-                    mape_unreliable = validation.get("mape_unreliable", False)
                     st.metric(
                         label="Error Rate (MAPE)",
-                        value="N/A" if mape_unreliable else f"{mape_value:.1f}%",
-                        help="Unreliable when daily cash flows are near zero — use MAE instead" if mape_unreliable else "Average percentage error — lower is better"
+                        value=f"{validation['mape']:.1f}%",
+                        help="Average percentage error — lower is better"
                     )
                 with v_col3:
                     st.metric(
