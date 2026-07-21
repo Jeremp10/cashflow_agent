@@ -26,7 +26,6 @@ from config.settings import (
     LOW_BALANCE_THRESHOLD,
 )
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,27 +35,26 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# CORS — allows Streamlit frontend to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize DB on startup
+
 @app.on_event("startup")
 async def startup():
     init_db()
     logger.info("Database initialized")
 
 
-# --- Request/Response models ---
+# ── Request / Response models ─────────────────────────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
-    current_balance: float = 320.0
+    current_balance: float = 0.0  # always passed explicitly from UI
 
 
 class AskResponse(BaseModel):
@@ -79,12 +77,12 @@ class SyncResponse(BaseModel):
     message: str
 
 
-# --- Helper: get current liquid balance from Plaid ---
+# ── Helper ────────────────────────────────────────────────────────────────────
 
 def _get_plaid_balance() -> tuple[float, str]:
     """
     Creates a fresh sandbox token and returns liquid balance + access token.
-    In production: store access token in DB, reuse it.
+    Production: store access token in DB and reuse it instead.
     """
     public_token = create_sandbox_public_token()
     access_token = exchange_public_token(public_token)
@@ -100,7 +98,7 @@ def _get_plaid_balance() -> tuple[float, str]:
     return round(balance, 2), access_token
 
 
-# --- Routes ---
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -120,30 +118,20 @@ async def get_balance():
 
 @app.post("/sync", response_model=SyncResponse)
 async def sync():
-    """
-    Pull fresh data from Plaid and QuickBooks, save to DB.
-    In sandbox: creates a new Plaid item each time.
-    In production: reuses stored access token.
-    """
+    """Pull fresh data from Plaid and QuickBooks, save to DB."""
     plaid_ok = False
     qbo_ok = False
     messages = []
 
-    # --- Plaid sync ---
     try:
         balance, access_token = _get_plaid_balance()
-        sync_plaid_transactions(
-            access_token,
-            date(2026, 1, 1),
-            date.today()
-        )
+        sync_plaid_transactions(access_token, date(2026, 1, 1), date.today())
         plaid_ok = True
         messages.append(f"Plaid synced (balance: ${balance:,.2f})")
     except Exception as e:
         messages.append(f"Plaid sync failed: {e}")
         logger.error(f"Plaid sync error: {e}")
 
-    # --- QBO sync ---
     try:
         refreshed = refresh_access_token(QBO_REFRESH_TOKEN)
         if not refreshed:
@@ -216,11 +204,7 @@ async def get_forecast():
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(request: AskRequest):
-    """
-    Main conversational endpoint.
-    Takes a plain English question, returns Claude's answer
-    grounded in real financial data.
-    """
+    """Conversational endpoint — Claude answers grounded in real financial data."""
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     try:
@@ -237,6 +221,7 @@ async def reset():
     reset_conversation()
     return {"status": "conversation reset"}
 
+
 @app.get("/forecast/validation")
 async def get_validation():
     """Run cross validation and return accuracy metrics."""
@@ -244,9 +229,11 @@ async def get_validation():
         from forecast.validation import summarize_validation
         df = get_all_transactions()
         if df.empty:
-            return {"error": "No transactions found."}
+            raise HTTPException(status_code=404, detail="No transactions found. Run /sync first.")
         cleaned = prepare_data(df)
         return summarize_validation(cleaned)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Validation error: {e}")
-        return {"error": "Validation unavailable at the moment."}
+        raise HTTPException(status_code=500, detail=str(e))
