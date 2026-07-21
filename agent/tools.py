@@ -1,7 +1,7 @@
 import pandas as pd
 from datetime import date, timedelta
 from database.repository import get_all_transactions
-from forecast.forecast import prepare_data, run_forecast, flag_low_balance
+from forecast.forecast import prepare_data, run_cash_schedule, flag_low_balance
 from config.settings import FORECAST_HORIZON_DAYS, LOW_BALANCE_THRESHOLD
 
 
@@ -59,10 +59,10 @@ def get_forecast_summary(starting_balance: float) -> dict:
         }
 
     cleaned = prepare_data(df)
-    forecast_df = run_forecast(
-        cleaned,
-        days_ahead=FORECAST_HORIZON_DAYS,
-        starting_balance=starting_balance
+    forecast_df = run_cash_schedule(
+    df,
+    starting_balance=starting_balance,
+    days_ahead=FORECAST_HORIZON_DAYS,
     )
 
     projected_balance = forecast_df["projected_balance"].iloc[-1]

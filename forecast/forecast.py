@@ -3,14 +3,15 @@ import pandas as pd
 from datetime import date
 from prophet import Prophet
 
-
-
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
 
 def prepare_data(transactions_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate raw transactions into daily net cash flow for Prophet."""
+    """
+    Aggregate raw transactions into daily net cash flow.
+    Used by Prophet cross validation in validation.py.
+    """
     if transactions_df.empty:
         return pd.DataFrame(columns=["ds", "y"])
 
@@ -18,7 +19,8 @@ def prepare_data(transactions_df: pd.DataFrame) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"]).dt.date
 
     df["signed_amount"] = df.apply(
-        lambda row: row["amount"] if str(row.get("type", "")).lower() == "in" else -row["amount"],
+        lambda row: row["amount"] if str(row.get("type", "")).lower() == "in"
+        else -row["amount"],
         axis=1,
     )
 
@@ -29,62 +31,92 @@ def prepare_data(transactions_df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"date": "ds", "signed_amount": "y"})
     )
 
+    daily["ds"] = pd.to_datetime(daily["ds"])
     daily = daily.sort_values("ds").reset_index(drop=True)
     return daily
 
 
-def run_forecast(cleaned_df: pd.DataFrame, days_ahead: int = 90, starting_balance: float = 0.0) -> pd.DataFrame:
-    """Fit Prophet on daily net flow, then convert to a projected running balance."""
-    if cleaned_df.empty:
-        return pd.DataFrame(columns=["ds", "yhat", "yhat_lower", "yhat_upper", "projected_balance"])
+def run_cash_schedule(
+    transactions_df: pd.DataFrame,
+    starting_balance: float,
+    days_ahead: int = 30,
+) -> pd.DataFrame:
+    """
+    Direct cash position schedule — replaces Prophet for balance projection.
 
-    model = Prophet()
-    model.fit(cleaned_df)
+    More accurate than statistical forecasting for short-term cash flow because
+    it uses actual known obligations (QBO invoices/bills by due date) combined
+    with estimated recurring spend learned from Plaid history.
 
-    future = model.make_future_dataframe(periods=days_ahead)
-    forecast = model.predict(future)
+    Logic per day:
+      known QBO inflows on that date
+    - known QBO outflows on that date
+    + estimated daily recurring net from Plaid history
+    = daily net change → cumulative running balance
+    """
+    if transactions_df.empty:
+        return pd.DataFrame(columns=["ds", "projected_balance", "qbo_in", "qbo_out", "daily_net"])
 
-    result = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
-
+    df = transactions_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
     today = pd.Timestamp(date.today())
-    result = result[result["ds"] >= today].copy()
-    result = result.reset_index(drop=True)
 
-    result["projected_balance"] = starting_balance + result["yhat"].cumsum()
+    # Known future QBO obligations — exact dates, exact amounts
+    future_qbo = df[
+        (df["source"] == "qbo") &
+        (df["date"] > today)
+    ].copy()
 
-    return result
+    # Historical Plaid data — learn recurring patterns
+    historical_plaid = df[
+        (df["source"] == "plaid") &
+        (df["date"] <= today)
+    ].copy()
+
+    # Average daily net from Plaid history
+    # This represents recurring spend/income patterns beyond known obligations
+    if not historical_plaid.empty:
+        plaid_in = float(historical_plaid[historical_plaid["type"] == "in"]["amount"].sum())
+        plaid_out = float(historical_plaid[historical_plaid["type"] == "out"]["amount"].sum())
+        days_of_history = max((today - historical_plaid["date"].min()).days, 1)
+        avg_daily_net = (plaid_in - plaid_out) / days_of_history
+    else:
+        avg_daily_net = 0.0
+
+    # Build day-by-day schedule
+    rows = []
+    running_balance = starting_balance
+
+    for i in range(1, days_ahead + 1):
+        future_date = today + pd.Timedelta(days=i)
+
+        # Known QBO flows on this exact date
+        day_qbo = future_qbo[
+            future_qbo["date"].dt.date == future_date.date()
+        ]
+        qbo_in = float(day_qbo[day_qbo["type"] == "in"]["amount"].sum())
+        qbo_out = float(day_qbo[day_qbo["type"] == "out"]["amount"].sum())
+
+        # Estimated recurring from historical Plaid average
+        daily_net = qbo_in - qbo_out + avg_daily_net
+        running_balance += daily_net
+
+        rows.append({
+            "ds": future_date,
+            "qbo_in": round(qbo_in, 2),
+            "qbo_out": round(qbo_out, 2),
+            "estimated_recurring": round(avg_daily_net, 2),
+            "daily_net": round(daily_net, 2),
+            "projected_balance": round(running_balance, 2),
+        })
+
+    return pd.DataFrame(rows)
+
 
 def flag_low_balance(forecast_df: pd.DataFrame, threshold: float) -> list:
     """Return dates where projected running balance drops below threshold."""
     if forecast_df.empty:
         return []
-    flagged = forecast_df.loc[forecast_df["projected_balance"] < threshold, "ds"].tolist()
-    return flagged
-
-
-if __name__ == "__main__":
-    import sys
-    sys.path.append(".")
-    from database.repository import get_all_transactions
-    from integrations.sync import get_starting_balance
-    from config.settings import FORECAST_HORIZON_DAYS, LOW_BALANCE_THRESHOLD
-
-    df = get_all_transactions()
-    print(f"Loaded {len(df)} transactions from db")
-
-    cleaned = prepare_data(df)
-    print("\nDaily net cash flow (last 10 days):")
-    print(cleaned.tail(10))
-
-    starting_balance = get_starting_balance()
-
-    forecast = run_forecast(cleaned, days_ahead=30, starting_balance=starting_balance)
-
-    print("\nForecast (next 30 days, last 10 rows):")
-    print(forecast.tail(10))
-
-    flagged = flag_low_balance(forecast, threshold=1000.0)
-    if flagged:
-        print(f"\n  Balance projected to drop below $1,000 starting: {flagged[0].date()}")
-    else:
-        print("\n Balance stays above $1,000 for the next 30 days")
+    return forecast_df.loc[
+        forecast_df["projected_balance"] < threshold, "ds"
+    ].tolist()

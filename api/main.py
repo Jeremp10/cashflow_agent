@@ -17,7 +17,7 @@ from integrations.sync import (
     sync_qbo_invoices,
     sync_qbo_bills,
 )
-from forecast.forecast import prepare_data, run_forecast, flag_low_balance
+from forecast.forecast import prepare_data, run_cash_schedule, flag_low_balance
 from agent.financial_agent import ask, reset_conversation
 from config.settings import (
     QBO_REFRESH_TOKEN,
@@ -81,21 +81,27 @@ class SyncResponse(BaseModel):
 
 def _get_plaid_balance() -> tuple[float, str]:
     """
-    Creates a fresh sandbox token and returns liquid balance + access token.
-    Production: store access token in DB and reuse it instead.
+    DEMO MODE: hardcoded balance to match seeded demo scenario.
+    Replace with the real Plaid call below for production.
     """
-    public_token = create_sandbox_public_token()
-    access_token = exchange_public_token(public_token)
-    time.sleep(3)
+    return 12400.0, "demo-access-token"
+   # """
+    #Creates a fresh sandbox token and returns liquid balance + access token.
+    ##Production: store access token in DB and reuse it instead.
+    #"""
+   # public_token = create_sandbox_public_token()
+    #access_token = exchange_public_token(public_token)
+    #time.sleep(3)
 
-    accounts = get_balances(access_token)
-    liquid_types = {"checking", "savings"}
-    balance = sum(
-        acc["balance"] for acc in accounts
-        if str(acc["subtype"]).lower() in liquid_types
-        and acc["balance"] is not None
-    )
-    return round(balance, 2), access_token
+    #accounts = get_balances(access_token)
+    #liquid_types = {"checking", "savings"}
+    #balance = sum(
+     #   acc["balance"] for acc in accounts
+      #  if str(acc["subtype"]).lower() in liquid_types
+       # and acc["balance"] is not None
+    #)
+    #return round(balance, 2), access_token
+
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -164,29 +170,41 @@ async def sync():
 
 @app.get("/forecast", response_model=ForecastResponse)
 async def get_forecast():
-    """Run Prophet forecast and return summary."""
+    """
+    Cash flow schedule — projects balance forward using known QBO obligations
+    combined with estimated recurring spend from Plaid history.
+    """
     try:
         balance, _ = _get_plaid_balance()
 
         df = get_all_transactions()
         if df.empty:
-            raise HTTPException(status_code=404, detail="No transactions found. Run /sync first.")
+            raise HTTPException(
+                status_code=404,
+                detail="No transactions found. Run /sync first."
+            )
 
-        cleaned = prepare_data(df)
-        forecast_df = run_forecast(
-            cleaned,
+        from forecast.forecast import run_cash_schedule, flag_low_balance
+        forecast_df = run_cash_schedule(
+            df,
+            starting_balance=balance,
             days_ahead=FORECAST_HORIZON_DAYS,
-            starting_balance=balance
         )
 
-        projected_balance = round(forecast_df["projected_balance"].iloc[-1], 2)
+        projected_balance = round(float(forecast_df["projected_balance"].iloc[-1]), 2)
         trend = "positive" if projected_balance > balance else "negative"
 
         flagged = flag_low_balance(forecast_df, threshold=LOW_BALANCE_THRESHOLD)
         if flagged:
-            alert = f"Balance may drop below ${LOW_BALANCE_THRESHOLD:,.0f} starting {flagged[0].date()}"
+            alert = (
+                f"Balance may drop below ${LOW_BALANCE_THRESHOLD:,.0f} "
+                f"starting {flagged[0].date()}"
+            )
         else:
-            alert = f"Balance stays above ${LOW_BALANCE_THRESHOLD:,.0f} for {FORECAST_HORIZON_DAYS} days"
+            alert = (
+                f"Balance stays above ${LOW_BALANCE_THRESHOLD:,.0f} "
+                f"for {FORECAST_HORIZON_DAYS} days"
+            )
 
         return ForecastResponse(
             current_balance=balance,
