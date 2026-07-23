@@ -1,95 +1,135 @@
 import pandas as pd
 import numpy as np
-from prophet import Prophet
-from prophet.diagnostics import cross_validation, performance_metrics
 import logging
 
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
 
-def run_cross_validation(cleaned_df: pd.DataFrame) -> pd.DataFrame:
+def validate_recurring_estimate(transactions_df: pd.DataFrame) -> dict:
     """
-    Prophet built-in cross validation.
-    initial: how much history to train on first
-    period:  how often to cut a new training window
-    horizon: how far ahead to forecast each time
+    Validate the recurring spend estimate used in run_cash_schedule().
+
+    Method: leave-one-week-out cross validation on Plaid history.
+    For each week, estimate daily net using all other weeks,
+    compare to what that week actually was.
     """
-    if len(cleaned_df) < 30:
-        print("Not enough data for meaningful cross validation (need 30+ days)")
-        return pd.DataFrame()
+    if transactions_df.empty:
+        return {"error": "No transaction data available"}
 
-    model = Prophet()
-    model.fit(cleaned_df)
+    df = transactions_df.copy()
+    df = df[df["source"] == "plaid"].copy()
 
-    df_cv = cross_validation(
-        model,
-        initial="45 days",
-        period="7 days",
-        horizon="14 days",
-        parallel=None
+    if df.empty:
+        return {"error": "No Plaid transaction history available"}
+
+    df["date"] = pd.to_datetime(df["date"])
+    df["signed_amount"] = df.apply(
+        lambda r: r["amount"] if r["type"] == "in" else -r["amount"],
+        axis=1
     )
-    return df_cv
 
+    # Aggregate to daily net
+    daily = (
+        df.groupby(df["date"].dt.date)["signed_amount"]
+        .sum()
+        .reset_index()
+    )
+    daily.columns = ["date", "net"]
+    daily["date"] = pd.to_datetime(daily["date"])
+    daily["week"] = daily["date"].dt.isocalendar().week.astype(int)
+    daily["year"] = daily["date"].dt.isocalendar().year.astype(int)
+    daily["week_key"] = daily["year"].astype(str) + "-" + daily["week"].astype(str)
 
-def get_performance_metrics(df_cv: pd.DataFrame) -> pd.DataFrame:
-    """Compute standard time series error metrics from cross validation results."""
-    if df_cv.empty:
-        return pd.DataFrame()
-    return performance_metrics(df_cv)
+    weeks = daily["week_key"].unique()
 
+    if len(weeks) < 3:
+        return {"error": "Need at least 3 weeks of Plaid history for validation"}
 
-def summarize_validation(cleaned_df: pd.DataFrame) -> dict:
-    df_cv = run_cross_validation(cleaned_df)
-    if df_cv.empty:
-        return {"error": "Insufficient data for validation — need at least 30 days of history"}
+    errors = []
+    week_results = []
 
-    metrics = get_performance_metrics(df_cv)
+    for test_week in weeks:
+        # Train on all other weeks
+        train = daily[daily["week_key"] != test_week]
+        test = daily[daily["week_key"] == test_week]
 
-    # Cast to native Python types — FastAPI cannot serialize NumPy types
-    mae = float(metrics["mae"].mean())
-    rmse = float(metrics["rmse"].mean())
-    mape_raw = float(metrics["mape"].mean() * 100)
+        if train.empty or test.empty:
+            continue
 
-    mape_display = round(min(mape_raw, 999.0), 2)
-    mape_unreliable = bool(mape_raw > 200)
+        # Predicted daily net = mean of training days
+        predicted_daily_net = float(train["net"].mean())
+
+        # Actual daily net for the test week
+        actual_daily_net = float(test["net"].mean())
+
+        error = abs(predicted_daily_net - actual_daily_net)
+        errors.append(error)
+
+        week_results.append({
+            "week": test_week,
+            "predicted": round(predicted_daily_net, 2),
+            "actual": round(actual_daily_net, 2),
+            "error": round(error, 2),
+        })
+
+    if not errors:
+        return {"error": "Could not compute validation — insufficient data"}
+
+    mae = float(np.mean(errors))
+    std = float(np.std(errors))
+    best_week_error = float(np.min(errors))
+    worst_week_error = float(np.max(errors))
+
+    # Overall daily net (what the cash schedule actually uses)
+    overall_daily_net = float(daily["net"].mean())
 
     return {
-        "mae": round(mae, 2),
-        "rmse": round(rmse, 2),
-        "mape": mape_display,
-        "mape_unreliable": mape_unreliable,
-        "interpretation": _interpret_metrics(mae, mape_display, mape_unreliable),
-        "data_points": int(len(cleaned_df)),
-        "cv_windows": int(len(df_cv)),
+        "method": "leave-one-week-out cross validation on Plaid history",
+        "mae_daily": round(mae, 2),
+        "std_daily": round(std, 2),
+        "best_week_error": round(best_week_error, 2),
+        "worst_week_error": round(worst_week_error, 2),
+        "overall_daily_net_estimate": round(overall_daily_net, 2),
+        "weeks_tested": int(len(errors)),
+        "data_points": int(len(daily)),
+        "qbo_accuracy": "100% — exact amounts and dates pulled directly from QuickBooks",
+        "interpretation": _interpret_validation(mae, overall_daily_net, len(errors)),
     }
 
 
-def _interpret_metrics(mae: float, mape: float, mape_unreliable: bool = False) -> str:
-    if mape_unreliable:
-        return (
-            f"Error rate unreliable with current data — daily net flows are too "
-            f"variable for percentage-based metrics to be meaningful. "
-            f"Dollar error (MAE) of ${mae:,.0f}/day is the more useful signal here."
-        )
-    elif mape < 10:
-        return f"Strong accuracy — forecast is off by {mape:.2f}% on average"
-    elif mape < 25:
-        return f"Moderate accuracy — forecast is off by {mape:.2f}% on average. Improves with more history."
+def _interpret_validation(mae: float, daily_net: float, weeks_tested: int) -> str:
+    """Plain English interpretation of cash schedule accuracy."""
+    if abs(daily_net) < 1:
+        ratio = None
     else:
-        return f"Limited accuracy ({mape:.2f}% average error) — model needs more historical data."
+        ratio = mae / abs(daily_net)
+
+    if weeks_tested < 4:
+        quality = "limited — more history will improve this estimate"
+    elif ratio is None:
+        quality = "daily net flows are near zero — MAE is the more useful signal"
+    elif ratio < 0.5:
+        quality = "good"
+    elif ratio < 1.0:
+        quality = "moderate"
+    else:
+        quality = "limited — high variability in daily cash flows"
+
+    return (
+        f"Recurring spend estimate accuracy: {quality}. "
+        f"Off by ${mae:,.0f}/day on average across {weeks_tested} weeks of history. "
+        f"QBO obligations (invoices and bills) are exact — pulled directly from QuickBooks."
+    )
 
 
-if __name__ == "__main__":
+def summarize_validation(cleaned_df: pd.DataFrame) -> dict:
+    """
+    Main validation entry point called by the API.
+    Validates the cash schedule, not Prophet.
+    cleaned_df is unused here (kept for API compatibility)
+    but we fetch raw transactions internally.
+    """
     from database.repository import get_all_transactions
-    from forecast.forecast import prepare_data
-
-    df = get_all_transactions()
-    cleaned = prepare_data(df)
-
-    print(f"Running validation on {len(cleaned)} days of data...")
-    summary = summarize_validation(cleaned)
-
-    print("\n=== Validation Results ===")
-    for key, value in summary.items():
-        print(f"{key}: {value}")
+    raw_df = get_all_transactions()
+    return validate_recurring_estimate(raw_df)

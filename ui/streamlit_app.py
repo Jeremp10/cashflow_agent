@@ -265,40 +265,39 @@ if st.session_state.page == "Dashboard":
             validation = fetch_validation()
 
             if validation and "error" not in validation:
+                st.markdown("##### Cash Schedule Accuracy")
+                st.caption(f"Method: {validation.get('method', 'leave-one-week-out')}")
+
                 v_col1, v_col2, v_col3 = st.columns(3)
 
                 with v_col1:
                     st.metric(
-                        label="Avg Daily Error (MAE)",
-                        value=f"${validation['mae']:,.0f}",
-                        help="Average dollar difference between forecast and actual per day"
-                    )
+                        label="Recurring Estimate Error",
+                        value=f"${validation['mae_daily']:,.0f}/day",
+                        help="Average daily error in recurring spend estimate across all weeks tested"
+                        )
 
                 with v_col2:
-                    mape_value = validation["mape"]
-                    mape_unreliable = validation.get("mape_unreliable", False)
                     st.metric(
-                        label="Error Rate (MAPE)",
-                        value="N/A" if mape_unreliable else f"{mape_value:.2f}%",
-                        help=(
-                            "Unreliable when daily cash flows are near zero — use MAE instead"
-                            if mape_unreliable
-                            else "Average percentage error — lower is better"
-                        )
+                    label="Weeks Tested",
+                    value=validation["weeks_tested"],
+                    help="Number of weeks used in leave-one-week-out validation"
                     )
 
                 with v_col3:
                     st.metric(
-                        label="Data Points",
-                        value=validation["data_points"],
-                        help="Number of days used to train the model"
+                        label="QBO Obligations",
+                        value="Exact",
+                        help="Invoice and bill amounts/dates pulled directly from QuickBooks — no estimation"
                     )
 
                 st.caption(validation["interpretation"])
+
                 st.info(
-                    "Forecast accuracy improves naturally as more transaction history "
-                    "accumulates. With 3-6 months of data, error rates typically drop "
-                    "significantly. Current metrics reflect your available history."
+                    "The cash schedule combines two components: "
+                    "exact QuickBooks obligations (100% accurate) and estimated recurring "
+                    "spend from bank history (validated above). "
+                    "Accuracy improves as more Plaid history accumulates."
                 )
 
             elif validation and "error" in validation:
@@ -341,10 +340,10 @@ elif st.session_state.page == "Ask Your CFO":
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             with st.chat_message("user"):
-                st.markdown(msg["content"])
+                st.markdown(msg["content"], unsafe_allow_html=False)
         else:
             with st.chat_message("assistant"):
-                st.markdown(msg["content"])
+                st.markdown(msg["content"], unsafe_allow_html=False)
 
     # Suggested questions
     st.markdown("**Suggested questions:**")

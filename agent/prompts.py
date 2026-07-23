@@ -27,8 +27,13 @@ Cash flow forecast (next {context.get('forecast_days', 30)} days):
 - Low balance alert: {context.get('low_balance_alert', 'None')}
 
 Upcoming (from QuickBooks):
-- Outstanding invoices: ${context.get('outstanding_invoices', 0):,.2f} expected in
-- Unpaid bills: ${context.get('unpaid_bills', 0):,.2f} due out
+Outstanding invoices (from QuickBooks):
+{context.get('invoice_detail', 'No data')}
+Total expected in: ${context.get('outstanding_invoices', 0):,.2f}
+
+Upcoming bills (from QuickBooks):
+{context.get('bill_detail', 'No data')}
+Total due out: ${context.get('unpaid_bills', 0):,.2f}
 
 Data sources: Plaid (bank transactions) + QuickBooks (invoices/bills)
 Data as of: {context.get('data_as_of', 'unknown')}

@@ -83,19 +83,69 @@ def get_forecast_summary(starting_balance: float) -> dict:
 
 
 def get_qbo_summary() -> dict:
+
     """
-    Summarize outstanding invoices and unpaid bills from DB.
+    Summarize QBO invoices and bills with individual detail
+    so Claude can reason over specific amounts, customers, and due dates.
     """
+    from datetime import date
+    import pandas as pd
+
     df = get_all_transactions()
     if df.empty:
-        return {"outstanding_invoices": 0, "unpaid_bills": 0}
+        return {
+            "outstanding_invoices": 0,
+            "unpaid_bills": 0,
+            "invoice_detail": "No invoice data available",
+            "bill_detail": "No bill data available",
+        }
 
-    invoices = df[(df["source"] == "qbo") & (df["type"] == "in")]["amount"].sum()
-    bills = df[(df["source"] == "qbo") & (df["type"] == "out")]["amount"].sum()
+    df["date"] = pd.to_datetime(df["date"])
+    today = pd.Timestamp(date.today())
+
+    # Future QBO inflows — outstanding invoices
+    invoices = df[
+        (df["source"] == "qbo") &
+        (df["type"] == "in") &
+        (df["date"] >= today)
+    ].sort_values("date")
+
+    # Future QBO outflows — unpaid bills
+    bills = df[
+        (df["source"] == "qbo") &
+        (df["type"] == "out") &
+        (df["date"] >= today)
+    ].sort_values("date")
+
+    # Build readable invoice list for Claude
+    if not invoices.empty:
+        invoice_lines = []
+        for _, row in invoices.iterrows():
+            days_until = (row["date"] - today).days
+            invoice_lines.append(
+                f"  - {row['category']}: ${row['amount']:,.0f} due in {days_until} days ({row['date'].strftime('%b %d')})"
+            )
+        invoice_detail = "\n".join(invoice_lines)
+    else:
+        invoice_detail = "No outstanding invoices"
+
+    # Build readable bill list for Claude
+    if not bills.empty:
+        bill_lines = []
+        for _, row in bills.iterrows():
+            days_until = (row["date"] - today).days
+            bill_lines.append(
+                f"  - {row['category']}: ${row['amount']:,.0f} due in {days_until} days ({row['date'].strftime('%b %d')})"
+            )
+        bill_detail = "\n".join(bill_lines)
+    else:
+        bill_detail = "No upcoming bills"
 
     return {
-        "outstanding_invoices": round(invoices, 2),
-        "unpaid_bills": round(bills, 2),
+        "outstanding_invoices": round(float(invoices["amount"].sum()), 2),
+        "unpaid_bills": round(float(bills["amount"].sum()), 2),
+        "invoice_detail": invoice_detail,
+        "bill_detail": bill_detail,
     }
 
 
